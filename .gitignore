@@ -1,0 +1,14 @@
+
+.vs/concurrent_systems/v16/.suo
+
+*.db
+
+*.ipch
+
+*.vcxproj
+
+concurrent_systems.sln
+
+*.filters
+
+*.user
