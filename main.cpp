@@ -7,6 +7,9 @@
 #include <mutex>
 #include <chrono>
 #include <random>
+#include <condition_variable>
+#include <map>
+
 
 using namespace std;
 //global constants:
@@ -18,21 +21,35 @@ std::pair<double, double> Pressure_range{ 105.0 ,95.0 };   // upper lower
 std::pair<double, double> Capacitive_range{ 1.0 ,5.0 };   // upper lower
 //global variables:
 int sensors_used[] = { 0 ,0 ,0 };	// number of times sensors used in order  temperature sensor, pressure sensor, capacitive sensor
-// sensors names 
+// sensors names
 string s1 = "Temperature Sensor";
 string s2 = "Pressure Sensor";
 string s3 = "Capacitive Sensor";
 
-std::mutex Console_mu; //mutex for consoule writeing 
+std::map<std::thread::id, int> threadIDs; //declaring map which associates thread with an integer id
+
+std::mutex Console_mu; //mutex for consoule writeing
+std::mutex set_id;// mutex used to set therd id 
 
 
 //random number generator
 std::random_device rd;  //Will be used to obtain a seed for the random number engine
 std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
-std::uniform_int_distribution<> sensor_pick(0, 2);		// number generator used to pick sensors to sample 
-std::uniform_int_distribution<> random_1000( 0 ,1000);  // number generator  bewteen 0 and 1000 used to give 3 dp percsion randomness 
-//function prototypes: (as required)
+std::uniform_int_distribution<> sensor_pick(0, 2);		// number generator used to pick sensors to sample
+std::uniform_int_distribution<> random_1000( 0 ,1000);  // number generator  bewteen 0 and 1000 used to give 3 dp percsion randomness
 
+void print_Console(std::string to_print) {
+	std::lock_guard <mutex> lock(Console_mu);
+	std::cout << to_print << endl;
+}
+
+int GetThreadID()
+{
+	std::map <std::thread::id, int>::iterator it = threadIDs.find(std::this_thread::get_id());
+	if (it == threadIDs.end()) return -1; 	//thread 'id' NOT found
+	else return it->second; 				//thread 'id' found, return the associated integer –note the syntax
+
+}
 
 class Sensor { //abstract base class that models a sensor
 public:
@@ -56,7 +73,7 @@ public:
 	TempSensor(string& s) : Sensor(s) {} //constructor
 	virtual double getValue  () override {
 		//return a random value of ambient temperature between 10 and 30
-		
+
 		return (float)random_1000(gen)/1000.0 * (Temperature_range.first  -Temperature_range.second) + Temperature_range.second;
 	} //end getValue
 }; //end class TempSensor
@@ -92,7 +109,7 @@ public:
 	std::vector<double> getSensorData() { return sensor_data; }
 	void addData(double newData) { sensor_data.push_back(newData); }
 private:
-	
+
 	std::vector<double> sensor_data;
 	string sensor_type;
 }; //end class SensorData
@@ -102,7 +119,7 @@ public:
 	Receiver() { } //constructor
 	//Receives a SensorData object:
 	void receiveData(SensorData sd) {
-		
+
 		if ( !sd.getSensorType().compare(s1)) {
 			save_data(temperature_data , sd.getSensorData() , &mu_temperature);
 		}
@@ -112,15 +129,15 @@ public:
 		else {
 			save_data(capacitive_data , sd.getSensorData() , &mu_capacitive);
 		}
-		
+
 	}
 	// print out all data for each sensor:
 	void printSensorData() {
-		cout << " idx  = data  for temperature  " << endl;
+		cout << "idx  = data  for temperature  " << endl;
 		print_vector(temperature_data);
-		cout << " idx  = data  for pressure  " << endl;
+		cout << "idx  = data  for pressure  " << endl;
 		print_vector(pressure_data);
-		cout << " idx  = data  for capacitive  " << endl;
+		cout << "idx  = data  for capacitive  " << endl;
 		print_vector(capacitive_data);
 
 	}
@@ -133,7 +150,7 @@ private:
 	}
 
 	void save_data(std::vector <double>& save_to , std::vector <double> save_from  ,std::mutex* mu) {
-		lock_guard<mutex> lock( *mu);
+		lock_guard<mutex> lock(*mu);
 		for (int i = 0; i < save_from.size(); i++) {
 			save_to.push_back(save_from.at(i));
 		}
@@ -172,6 +189,10 @@ public:
 		for (int i =0 ; i <sd.size() ;i++)
 			myReceiver.receiveData(sd.at(i));
 	}
+	void writeToDataLink(SensorData sd) {
+		
+			myReceiver.receiveData(sd);
+	}
 	//returns the link Id
 	int getLinkId() {
 		return linkId;
@@ -205,24 +226,26 @@ public:
 			}
 			else if (i == NUM_OF_LINKS - 1) {
 				i = -1;
+				print_Console(string("Thread " + std::to_string(GetThreadID()) + string("  is susspended waiting for link") ));
 				while (numOfAvailableLinks == 0) {
-					avaiable_links.wait(lock);
+					avaiable_links.wait(lock );
 				}
 
 			}
 		}
-		
+		print_Console(string("Thread ") + std::to_string(GetThreadID()) + string(" has locked link ") +std::to_string(i) );
 			return commsLinks.at(i);
 	}
 	//Release a comms link:
 	void releaseLink(Link& releasedLink) {
 		unique_lock <mutex> lock(LAC_mu);
 		releasedLink.setIdle();
+		print_Console(string("Thread ") + to_string(GetThreadID()) + string(" has unlocked link ") + to_string(releasedLink.getLinkId()));
 		numOfAvailableLinks++;
 		avaiable_links.notify_one();
 	}
 	//continued
-		
+
 private:
 	Receiver & myReceiver; //Receiver reference
 	int numOfAvailableLinks;
@@ -230,7 +253,7 @@ private:
 	std::mutex LAC_mu; //mutex
 	//int link_writeing_to[2];
 	std::condition_variable avaiable_links;
-	
+
 }; //end class LinkAccessController
 
 
@@ -245,88 +268,86 @@ public:
 
 	// Locks the bus
 	void requestBC() {
-		BC_mu.lock();
-		lock = true;
+		std::unique_lock <std::mutex> lock_mu(BC_mu);
+		while (locked)
+		{
+			print_Console(std::string("Bus is locked ") + std::to_string(GetThreadID()) + std::string(" suspended "));
+			BC_avaible.wait(lock_mu);
+		}
+
+		locked = true;
+		print_Console(std::string("BusController is locked by ") + std::to_string(GetThreadID()));
 	}
 	// Releases the bus if locked
 	void releaseBC() {
-		if (lock) {
-			lock = false;
-			BC_mu.unlock();
+		std::unique_lock <std::mutex> lock_mu(BC_mu);
+		if (locked) {
+			locked = false;
+			print_Console(std::string("BusController is unlocked by ") + std::to_string(GetThreadID()));
+			BC_avaible.notify_one();
 		}
 	}
-	// to let you check if the bus is locked 
-	bool get_lock() { return lock; }
-	// sameple sensor 
+	// to let you check if the bus is locked
+	bool get_lock() { return locked; }
+	// sameple sensor
 	double getSensorValue(int selector) {
 		return (*theSensors[selector]).getValue();
 	}
-	// get sensor type 
+	// get sensor type
 	string getSensorType(int selector) {
 		return theSensors[selector]->getType();
 	}
 
 private:
-	bool lock = false; //'false' means that the BC is not locked
+	bool locked = false; //'false' means that the BC is not locked
 	std::vector<Sensor*>& theSensors; //reference to vector of Sensor pointers
 	std::mutex BC_mu; //mutex fpr bus controller
-	
+	std::condition_variable BC_avaible ;
 }; //end class BC
 
 
 //run function – executed by each thread:
-void run(BC& theBC , LinkAccessController& LAC,int idx ) { //run(BC& theBC, int idx)
-	/// todo need to clean up this code a bit more 
+void run(BC& theBC , LinkAccessController& LAC , int idx ) { //run(BC& theBC, int idx)
+	/// main run funcation
+	set_id.lock();
+	threadIDs.insert(std::make_pair(std::this_thread::get_id() , idx));
+	set_id.unlock();
+
+	// data stroage 
 	std::vector <SensorData> data;
 	data.push_back(SensorData(s1));
 	data.push_back(SensorData(s2));
 	data.push_back(SensorData(s3));
-		
+
 		for (int i = 0; i < NUM_OF_SAMPLES; i++) { // NUM_OF_SAMPLES = 50 (initially)
-			// checks if bus is free if not locks the output console then prints message 
-			if (theBC.get_lock()) {
-				Console_mu.lock();
-				cout << "Bus is locked " << idx << " suspended " << endl;
-				Console_mu.unlock();
-			}
+			
+
 			// request use of the BC:
 			theBC.requestBC();
 
-			// lets you know its been locked 
-			Console_mu.lock();
-			cout << "BusController is locked by " << idx << endl;
-			Console_mu.unlock();
 			// generate a random value between 0 and 2, and use it to
 			int s = sensor_pick(gen);
-			
+
 			// select a sensor and obtain a value and the sensor's type:
 			double value = theBC.getSensorValue(s);
 			string type = theBC.getSensorType(s);
-			sensors_used[s] ++;
+			sensors_used[s] ++;// increment counter for sensor chosen (to keep count of how many times each was used)
+			// print the results from sensors
+			print_Console(std::string("thread ") + std::to_string(idx) + std::string(" sampled ") + type +std::string(" ") +std::to_string(value));
 
-			Console_mu.lock();
-			cout << "thread " << idx << " sampled " << type << "= " << value << endl;
-			Console_mu.unlock();
-
-			
 			data.at(s).addData(value);
-			// print the results from sensors 
 
-			// increment counter for sensor chosen (to keep count of how many times each was used)
 			// release the BC:
-			Console_mu.lock();
-			cout << "BusController is unlocked by " << idx << endl;
-			Console_mu.unlock();
-			theBC.releaseBC();
-			
 
-				// delay for random period between 0.001s – 0.01s:  3 significant figures 
+			theBC.releaseBC();
+
+
+			// delay for random period between 0.001s – 0.01s:  3 significant figures
 			std::this_thread::sleep_for(std::chrono::microseconds(random_1000(gen) *9 +1000 ));
 		} // end of for
-		// transmit data 
+		// transmit data
 		Link& tramistion_link = LAC.requestLink();
 		tramistion_link.writeToDataLink(data);
-		//if (idx == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(10000)); }
 		LAC.releaseLink(tramistion_link);
 
 
@@ -336,12 +357,12 @@ void run(BC& theBC , LinkAccessController& LAC,int idx ) { //run(BC& theBC, int 
 int main() {
 	//declare a vector of Sensor pointers:
 	std::vector<Sensor*> sensors;
-	
+
 	//initialise each sensor and insert into the vector:
 	sensors.push_back(new TempSensor(s1)); //push_back is a vector method.
 	sensors.push_back(new PressureSensor (s2));
 	sensors.push_back(new CapacitiveSensor(s3));
-	
+
 	Receiver theRC;
 	LinkAccessController LAC( std::ref(theRC));
 	// Instantiate the BC:
@@ -352,7 +373,7 @@ int main() {
 	std::thread the_threads[MAX_NUM_OF_THREADS]; //array of threads
 	for (int i = 0; i < MAX_NUM_OF_THREADS; i++) {
 		//launch the threads:
-		the_threads[i] = thread(run , std::ref( theBC) , std::ref(LAC) ,i );
+		the_threads[i] = thread(run , std::ref( theBC) , std::ref(LAC) , i );
 
 	}
 	//wait for the threads to finish:
@@ -363,8 +384,9 @@ int main() {
 	//cout << "All threads terminated" << endl;
 	theRC.printSensorData();
 	//print out the number of times each sensor was accessed:
-	//cout << " Temperature Sensor used " << sensors_used[0] << " times "
-	//	<< " Pressure Sensor used " << sensors_used[1] << " times "
-	//	<< " Capacitive Sensor used " << sensors_used[2] << " times " << endl;
-		return 0;
+	std::cout << " Temperature Sensor used " << sensors_used[0] << " times "
+		<< " Pressure Sensor used " << sensors_used[1] << " times "
+		<< " Capacitive Sensor used " << sensors_used[2] << " times " << endl;
+	return 0;
 } // end of main
+
