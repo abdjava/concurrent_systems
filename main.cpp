@@ -28,8 +28,8 @@ string s3 = "Capacitive Sensor";
 
 std::map<std::thread::id, int> threadIDs; //declaring map which associates thread with an integer id
 
-std::mutex Console_mu; //mutex for consoule writeing
-std::mutex set_id;// mutex used to set therd id 
+std::mutex Console_mu; //mutex for console writeing
+std::mutex set_id;// mutex used to set thread id
 
 
 //random number generator
@@ -190,7 +190,7 @@ public:
 			myReceiver.receiveData(sd.at(i));
 	}
 	void writeToDataLink(SensorData sd) {
-		
+
 			myReceiver.receiveData(sd);
 	}
 	//returns the link Id
@@ -226,7 +226,7 @@ public:
 			}
 			else if (i == NUM_OF_LINKS - 1) {
 				i = -1;
-				print_Console(string("Thread " + std::to_string(GetThreadID()) + string("  is susspended waiting for link") ));
+				print_Console(string("Thread " + std::to_string(GetThreadID()) + string("  is suspended waiting for link") ));
 				while (numOfAvailableLinks == 0) {
 					avaiable_links.wait(lock );
 				}
@@ -251,7 +251,6 @@ private:
 	int numOfAvailableLinks;
 	std::vector<Link> commsLinks;
 	std::mutex LAC_mu; //mutex
-	//int link_writeing_to[2];
 	std::condition_variable avaiable_links;
 
 }; //end class LinkAccessController
@@ -289,7 +288,7 @@ public:
 	}
 	// to let you check if the bus is locked
 	bool get_lock() { return locked; }
-	// sameple sensor
+	// sample sensor
 	double getSensorValue(int selector) {
 		return (*theSensors[selector]).getValue();
 	}
@@ -313,14 +312,14 @@ void run(BC& theBC , LinkAccessController& LAC , int idx ) { //run(BC& theBC, in
 	threadIDs.insert(std::make_pair(std::this_thread::get_id() , idx));
 	set_id.unlock();
 
-	// data stroage 
+	// data stroage
 	std::vector <SensorData> data;
 	data.push_back(SensorData(s1));
 	data.push_back(SensorData(s2));
 	data.push_back(SensorData(s3));
 
 		for (int i = 0; i < NUM_OF_SAMPLES; i++) { // NUM_OF_SAMPLES = 50 (initially)
-			
+
 
 			// request use of the BC:
 			theBC.requestBC();
@@ -346,9 +345,13 @@ void run(BC& theBC , LinkAccessController& LAC , int idx ) { //run(BC& theBC, in
 			std::this_thread::sleep_for(std::chrono::microseconds(random_1000(gen) *9 +1000 ));
 		} // end of for
 		// transmit data
-		Link& tramistion_link = LAC.requestLink();
-		tramistion_link.writeToDataLink(data);
-		LAC.releaseLink(tramistion_link);
+		for (auto data_item : data) {
+			Link& tramistion_link = LAC.requestLink();
+			print_Console(string("Thread ") +std::to_string(GetThreadID()) +string(" transmitting data via link ") +std::to_string(tramistion_link.getLinkId()));
+			tramistion_link.writeToDataLink(data_item);
+			LAC.releaseLink(tramistion_link);
+			std::this_thread::sleep_for(std::chrono::microseconds(random_1000(gen) * 9 + 1000));
+		}
 
 
 } // end of run
@@ -363,7 +366,7 @@ int main() {
 	sensors.push_back(new PressureSensor (s2));
 	sensors.push_back(new CapacitiveSensor(s3));
 
-	Receiver theRC;
+	Receiver theRC; // creating the Receiver
 	LinkAccessController LAC( std::ref(theRC));
 	// Instantiate the BC:
 	BC theBC(std::ref(sensors));
@@ -381,7 +384,7 @@ int main() {
 		the_threads[i].join();
 	}
 
-	//cout << "All threads terminated" << endl;
+	cout << "All threads terminated" << endl;
 	theRC.printSensorData();
 	//print out the number of times each sensor was accessed:
 	std::cout << " Temperature Sensor used " << sensors_used[0] << " times "
